@@ -27,56 +27,27 @@
 #include <unistd.h>
 #include <assert.h>
 
-#include "xeb_event_types.h"
-#include "xeb_handler.h"
+#include <X11/Xlib.h>
 
 struct arguments {
-    xeb_event_type event_type;
     char *script_path;
 };
 
-struct event_map {
-    char *str;
-    xeb_event_type event;
-};
-
-static struct event_map mapping[] = {
-    {"resolution", ResolutionChange}
-};
-
 void print_usage(char *path) {
-    fprintf(stderr, "Usage: %s event_type script_path\n", path);
-    fprintf(stderr, "Event types:\n");
-    size_t mapping_size = sizeof(mapping) / sizeof(mapping[0]);
-    for (int i = 0; i < mapping_size; i++) {
-        fprintf(stderr, "\t%s\n", mapping[i].str);
-    }
+    fprintf(stderr, "Usage: %s script_path\n", path);
     exit(EXIT_FAILURE);
 }
 
 void parse_args(int argc, char** argv, struct arguments *args) {
-    if (argc != 3)
+    if (argc != 2)
         print_usage(argv[0]);
 
-    size_t mapping_size = sizeof(mapping) / sizeof(mapping[0]);
-    int found = 0;
-    for (int i = 0; i < mapping_size; i++) {
-        if (strcmp(argv[1], mapping[i].str) == 0) {
-            found = 1;
-            args->event_type = mapping[i].event;
-            break;
-        } 
-    }
-    if (!found)
-        print_usage(argv[0]);
-
-    args->script_path = argv[2];
+    args->script_path = argv[1];
 }
 
-int handle_callback(xeb_event_type event, void *data) {
+void handle_callback(void *data) {
     assert(data);
     struct arguments *args = data;
-    assert(args->event_type == event);
 
     pid_t pid = fork();
     int err;
@@ -86,6 +57,7 @@ int handle_callback(xeb_event_type event, void *data) {
             exit(EXIT_FAILURE);
             break;
         case 0: // Child
+            printf("here %s", args->script_path);
             err = execlp(args->script_path, args->script_path, NULL);
             if (err == -1) {
                 perror("Failed to open callback script\n");
@@ -95,14 +67,42 @@ int handle_callback(xeb_event_type event, void *data) {
     }
 }
 
+int xeb_loop(void *data) {
+    Display *display = XOpenDisplay(NULL);
+    if (!display) {
+        fprintf(stderr, "Failed to open display\n");
+        return -1;
+    }
+
+    int screen_count = ScreenCount(display);
+    Window roots[screen_count];
+
+    for (int i = 0; i < screen_count; i++) {
+        roots[i] = RootWindow(display, i);
+
+        XWindowAttributes attrs;
+        Status status = XGetWindowAttributes(display, roots[i], &attrs);
+        if (!status) {
+            fprintf(stderr, "Failed to get root window attributes for screen: %d\n", i);
+            return -1;
+        }
+
+        XSelectInput(display, roots[i], StructureNotifyMask);
+    }
+
+    for (;;) {
+        XEvent e;
+        XNextEvent(display, &e);
+        if (e.type == ConfigureNotify) {
+            handle_callback(data);
+        }
+    }
+}
+
 int main(int argc, char **argv) {
     struct arguments args;
-    int err;
-
     parse_args(argc, argv, &args);
-
-    xeb_add_callback(args.event_type, handle_callback, &args);
-
-    return xeb_loop() ? EXIT_FAILURE : EXIT_SUCCESS;    
+    return xeb_loop(&args) ? EXIT_FAILURE : EXIT_SUCCESS;    
 }
+
 
